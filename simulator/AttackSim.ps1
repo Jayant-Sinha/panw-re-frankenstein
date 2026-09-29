@@ -1,16 +1,27 @@
 param(
     [string]$LogPath = $(Join-Path (Split-Path -Parent $PSScriptRoot) "live_stream.log"),
     [string]$PidFilePath = $(Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "runtime") "attack-sim.pid"),
+    [string[]]$AttackTypes = @("Brute Force", "SQL Injection", "Port Scan", "Credential Stuffing"),
     [int]$IntervalMinSeconds = 1,
     [int]$IntervalMaxSeconds = 3
 )
 
-$attackTypes = @(
+$supportedAttackTypes = @(
     "Brute Force",
     "SQL Injection",
     "Port Scan",
     "Credential Stuffing"
 )
+
+$invalidTypes = @($AttackTypes | Where-Object { $_ -notin $supportedAttackTypes })
+if ($invalidTypes.Count -gt 0) {
+    throw "Unsupported attack type selection: $($invalidTypes -join ', ')"
+}
+
+$attackTypes = @($AttackTypes | Select-Object -Unique)
+if ($attackTypes.Count -eq 0) {
+    throw "Select at least one attack type."
+}
 
 $logDirectory = Split-Path -Parent $LogPath
 if (-not [string]::IsNullOrWhiteSpace($logDirectory) -and -not (Test-Path $logDirectory)) {
@@ -29,7 +40,7 @@ try {
     $writer = [System.IO.StreamWriter]::new($LogPath, $true, $utf8NoBom)
     [System.IO.File]::WriteAllText($PidFilePath, $PID.ToString(), $utf8NoBom)
 
-    Write-Host "Starting Cyber Attack Simulation..." -ForegroundColor Red
+    Write-Host "Starting Cyber Attack Simulation: $($attackTypes -join ', ')" -ForegroundColor Red
     Write-Host "Writing newline-delimited JSON to $LogPath" -ForegroundColor Cyan
     Write-Host "Simulator PID written to $PidFilePath" -ForegroundColor Cyan
 

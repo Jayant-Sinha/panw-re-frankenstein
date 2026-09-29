@@ -76,6 +76,40 @@
 		healthBridge: document.getElementById("health-bridge"),
 		healthLegacy: document.getElementById("health-legacy"),
 		healthSim: document.getElementById("health-sim"),
+		aiModelStatus: document.getElementById("ai-model-status"),
+		aiRefreshButton: document.getElementById("ai-refresh-button"),
+		aiGenerateButton: document.getElementById("ai-generate-button"),
+		aiAnalystMessage: document.getElementById("ai-analyst-message"),
+		aiBrief: document.getElementById("ai-brief"),
+		aiOverallAssessment: document.getElementById("ai-overall-assessment"),
+		aiKeyFindings: document.getElementById("ai-key-findings"),
+		aiCampaignHypotheses: document.getElementById("ai-campaign-hypotheses"),
+		aiRecommendedActions: document.getElementById("ai-recommended-actions"),
+		aiLimitations: document.getElementById("ai-limitations"),
+		aiBriefMeta: document.getElementById("ai-brief-meta"),
+		autoMitigateToggle: document.getElementById("auto-mitigate-toggle"),
+		autoMitigateMessage: document.getElementById("auto-mitigate-message"),
+		simulatorSummaryStatus: document.getElementById("simulator-summary-status"),
+		legacyLaunchStatus: document.getElementById("legacy-launch-status"),
+		legacyStartButton: document.getElementById("legacy-start-button"),
+		legacyStopButton: document.getElementById("legacy-stop-button"),
+		legacyLaunchMessage: document.getElementById("legacy-launch-message"),
+		attackLaunchStatus: document.getElementById("attack-launch-status"),
+		attackTypeOptions: document.getElementById("attack-type-options"),
+		attackStartButton: document.getElementById("attack-start-button"),
+		attackStopButton: document.getElementById("attack-stop-button"),
+		attackLaunchMessage: document.getElementById("attack-launch-message"),
+		investigationHistory: document.getElementById("investigation-history"),
+		historyDays: document.getElementById("history-days"),
+		historySummaryMeta: document.getElementById("history-summary-meta"),
+		historyTimeline: document.getElementById("history-timeline"),
+		historySeverityDonut: document.getElementById("history-severity-donut"),
+		historySeverityLegend: document.getElementById("history-severity-legend"),
+		historyCategoryChart: document.getElementById("history-category-chart"),
+		historySourceChart: document.getElementById("history-source-chart"),
+		historyEventList: document.getElementById("history-event-list"),
+		historyLoadMore: document.getElementById("history-load-more"),
+		historyError: document.getElementById("history-error"),
 		timelineChart: document.getElementById("timeline-chart"),
 		timelineSummary: document.getElementById("timeline-summary"),
 		timelineDetail: document.getElementById("timeline-detail"),
@@ -96,6 +130,19 @@
 		lastUpdatedAt: null,
 		mitigationPending: false,
 		mitigationResult: null,
+		eventMitigationError: null,
+		eventMitigationsPending: new Set(),
+		aiStatus: null,
+		aiPending: false,
+		aiBriefResult: null,
+		aiError: null,
+		autoMitigation: { enabled: true, threshold: 199, batch_size: 5 },
+		simulatorStatus: { attack_sim: { running: false, attack_types: [] }, legacy_api: { running: false, online: false, managed: false } },
+		simulatorPending: false,
+		selectedAttackTypes: new Set(),
+		historyOffset: 0,
+		historyEvents: [],
+		historyLoading: false,
 		reconnectAttempt: 0,
 		eventSource: null,
 		healthRefreshTimer: null,
@@ -119,6 +166,25 @@
 		ui.gaugeRing.style.strokeDasharray = String(GAUGE_CIRCUMFERENCE);
 		ui.gaugeRing.style.strokeDashoffset = String(GAUGE_CIRCUMFERENCE);
 		ui.mitigateButton.addEventListener("click", handleMitigationRequest);
+		ui.aiRefreshButton.addEventListener("click", refreshAiStatus);
+		ui.aiGenerateButton.addEventListener("click", handleAiBriefRequest);
+		ui.autoMitigateToggle.addEventListener("change", handleAutoMitigationToggle);
+		ui.legacyStartButton.addEventListener("click", () => handleSimulatorRequest("/api/simulators/legacy/start", {}, "legacy"));
+		ui.legacyStopButton.addEventListener("click", () => handleSimulatorRequest("/api/simulators/legacy/stop", {}, "legacy"));
+		ui.attackStartButton.addEventListener("click", () => {
+			const attackTypes = Array.from(ui.attackTypeOptions.querySelectorAll("input[name='attack-type']:checked")).map((item) => item.value);
+			handleSimulatorRequest("/api/simulators/attack/start", { attack_types: attackTypes }, "attack");
+		});
+		ui.attackStopButton.addEventListener("click", () => handleSimulatorRequest("/api/simulators/attack/stop", {}, "attack"));
+		ui.attackTypeOptions.addEventListener("change", (event) => {
+			if (event.target.matches("input[name='attack-type']")) {
+				state.selectedAttackTypes = new Set(Array.from(ui.attackTypeOptions.querySelectorAll("input:checked")).map((item) => item.value));
+				renderSimulatorControls();
+			}
+		});
+		ui.investigationHistory.addEventListener("toggle", () => { if (ui.investigationHistory.open) loadInvestigationHistory(true); });
+		ui.historyDays.addEventListener("change", () => loadInvestigationHistory(true));
+		ui.historyLoadMore.addEventListener("click", () => loadInvestigationHistory(false));
 		ui.feedSearchInput.addEventListener("input", (event) => {
 			state.feed.search = event.target.value || "";
 			renderOperatorQueue(state.lastHighlightedEventId);
@@ -165,8 +231,10 @@
 
 			ingestState(stateResponse);
 			applyHealthResponse(healthResponse);
+			await refreshSimulatorStatus();
 			renderAll();
 			setBridgeStatus("online");
+			refreshAiStatus();
 		} catch (error) {
 			console.error("Initial dashboard bootstrap failed.", error);
 			setBridgeStatus("reconnecting");
@@ -179,7 +247,9 @@
 	async function fetchJson(url) {
 		const response = await fetch(url, { headers: { Accept: "application/json" } });
 		if (!response.ok) {
-			throw new Error(`Request failed for ${url} with status ${response.status}`);
+			const staleBackend = response.status === 404 && (url.startsWith("/api/history/") || url.startsWith("/api/simulators/"));
+			const hint = staleBackend ? ". Restart the bridge from this project checkout to load the current API." : "";
+			throw new Error(`Request failed for ${url} with status ${response.status}${hint}`);
 		}
 
 		return response.json();
@@ -250,6 +320,190 @@
 		} catch (error) {
 			console.warn("Periodic health refresh failed.", error);
 		}
+		refreshAiStatus();
+		refreshSimulatorStatus();
+	}
+
+	async function refreshSimulatorStatus() {
+		try {
+			state.simulatorStatus = await fetchJson("/api/simulators/status");
+			if (state.simulatorStatus.attack_sim?.running) {
+				state.selectedAttackTypes = new Set(state.simulatorStatus.attack_sim.attack_types || []);
+			}
+		} catch (error) {
+			console.warn("Simulator status refresh failed.", error);
+		}
+		renderSimulatorControls();
+	}
+
+	function renderSimulatorControls() {
+		const attack = state.simulatorStatus.attack_sim || {};
+		const legacy = state.simulatorStatus.legacy_api || {};
+		const attackRunning = Boolean(attack.running);
+		const legacyOnline = Boolean(legacy.online || legacy.running);
+		ui.simulatorSummaryStatus.textContent = `${legacyOnline ? "Legacy online" : "Legacy offline"} · ${attackRunning ? "Attack simulation running" : "Attack simulation stopped"}`;
+		setLauncherBadge(ui.legacyLaunchStatus, legacyOnline ? "Online" : "Offline", legacyOnline ? "online" : "offline");
+		setLauncherBadge(ui.attackLaunchStatus, attackRunning ? "Running" : "Stopped", attackRunning ? "online" : "offline");
+		ui.legacyStartButton.disabled = state.simulatorPending || legacyOnline;
+		ui.legacyStopButton.disabled = state.simulatorPending || !legacy.managed;
+		ui.attackStartButton.disabled = state.simulatorPending || attackRunning || state.selectedAttackTypes.size === 0;
+		ui.attackStopButton.disabled = state.simulatorPending || !attackRunning;
+		ui.attackTypeOptions.querySelectorAll("input[name='attack-type']").forEach((checkbox) => {
+			const isRunning = (attack.attack_types || []).includes(checkbox.value);
+			checkbox.checked = isRunning || state.selectedAttackTypes.has(checkbox.value);
+			checkbox.disabled = state.simulatorPending || isRunning;
+		});
+		ui.legacyLaunchMessage.textContent = legacyOnline
+			? (legacy.managed ? "Legacy API is running under dashboard control." : "Legacy API is already online from another terminal.")
+			: (ui.legacyLaunchMessage.dataset.message || "Start the ASP.NET source here or from its terminal.");
+		ui.attackLaunchMessage.textContent = attackRunning
+			? `Running: ${(attack.attack_types || []).join(", ")}. Stop the simulation to change the selection.`
+			: (ui.attackLaunchMessage.dataset.message || "Select one or more attack types, then start the simulation.");
+	}
+
+	function setLauncherBadge(element, label, className) {
+		element.textContent = label;
+		element.className = `health-badge health-${className}`;
+	}
+
+	async function handleSimulatorRequest(url, body, kind) {
+		if (state.simulatorPending) return;
+		state.simulatorPending = true;
+		const messageElement = kind === "legacy" ? ui.legacyLaunchMessage : ui.attackLaunchMessage;
+		messageElement.dataset.message = "Working…";
+		renderSimulatorControls();
+		try {
+			const response = await fetch(url, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify(body)
+			});
+			let payload = {};
+			try {
+				payload = await response.json();
+			} catch {
+				if (response.status === 404) {
+					throw new Error("This bridge process does not provide simulator controls. Restart the bridge from this project checkout.");
+				}
+				throw new Error(`Simulator request failed with status ${response.status}.`);
+			}
+			if (!response.ok || !payload.success) throw new Error(payload.message || `Simulator request failed with status ${response.status}.`);
+			messageElement.dataset.message = payload.message || "Simulator state updated.";
+			await refreshSimulatorStatus();
+		} catch (error) {
+			messageElement.dataset.message = error instanceof Error ? error.message : "Simulator action failed.";
+		} finally {
+			state.simulatorPending = false;
+			renderSimulatorControls();
+		}
+	}
+
+	async function handleAutoMitigationToggle() {
+		const enabled = ui.autoMitigateToggle.checked;
+		ui.autoMitigateToggle.disabled = true;
+		try {
+			const response = await fetch("/api/automation/auto-mitigate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify({ enabled })
+			});
+			const payload = await response.json();
+			if (!response.ok) throw new Error(payload.detail || "Could not update auto-mitigation.");
+			state.autoMitigation = payload;
+		} catch (error) {
+			ui.autoMitigateToggle.checked = !enabled;
+			state.autoMitigation = { ...state.autoMitigation, message: error instanceof Error ? error.message : "Could not update auto-mitigation." };
+		} finally {
+			ui.autoMitigateToggle.disabled = false;
+			renderAutoMitigation();
+		}
+	}
+
+	function renderAutoMitigation() {
+		const automation = state.autoMitigation || {};
+		ui.autoMitigateToggle.checked = Boolean(automation.enabled);
+		ui.autoMitigateMessage.textContent = automation.message || (automation.enabled
+			? "On · at 200 buffered events, resolve up to five oldest critical alerts"
+			: "Off · alerts remain until manually mitigated");
+	}
+
+	async function loadInvestigationHistory(reset) {
+		if (state.historyLoading) return;
+		state.historyLoading = true;
+		ui.historyError.textContent = "";
+		ui.historyLoadMore.disabled = true;
+		try {
+			if (reset) {
+				state.historyOffset = 0;
+				state.historyEvents = [];
+			}
+			const days = Number(ui.historyDays.value || 30);
+			const [summary, response] = await Promise.all([
+				fetchJson(`/api/history/summary?days=${days}`),
+				fetchJson(`/api/history/events?limit=100&offset=${state.historyOffset}`)
+			]);
+			state.historySummary = summary;
+			state.historyEvents = state.historyEvents.concat(response.events || []);
+			state.historyOffset = state.historyEvents.length;
+			renderInvestigationHistory();
+		} catch (error) {
+			ui.historyError.textContent = error instanceof Error ? error.message : "Could not load investigation history.";
+		} finally {
+			state.historyLoading = false;
+			ui.historyLoadMore.disabled = false;
+		}
+	}
+
+	function renderInvestigationHistory() {
+		const summary = state.historySummary;
+		if (!summary) return;
+		ui.historySummaryMeta.textContent = `${summary.total_events} archived events · last ${summary.days} days in charts`;
+		renderHistoryTimeline(summary.timeline || []);
+		renderHistorySeverity(summary.by_risk || []);
+		renderDistributionRows(ui.historyCategoryChart, (summary.by_category || []).map((row) => ({ label: titleCase(row.label), count: row.count, className: distributionClassForCategory(row.label) })));
+		renderDistributionRows(ui.historySourceChart, (summary.by_source || []).map((row) => ({ label: titleCase(row.label), count: row.count, className: String(row.label).includes("attack") ? "high" : "medium" })));
+		if (!state.historyEvents.length) {
+			ui.historyEventList.innerHTML = '<p class="feed-empty">No archived investigation records yet.</p>';
+		} else {
+			ui.historyEventList.innerHTML = state.historyEvents.map((item) => `
+				<article class="history-event-row">
+					<div><strong>${escapeHtml(item.title || "Security event")}</strong><span>${escapeHtml(item.id)} · ${escapeHtml(titleCase(item.source_system))} · ${escapeHtml(item.origin || "unknown origin")}</span></div>
+					<div><span class="history-event-risk risk-${escapeHtml(item.risk_level)}">${escapeHtml(titleCase(item.risk_level))} · ${Number(item.risk_score) || 0}</span><time>${escapeHtml(formatDateTime(item.observed_at))}</time></div>
+				</article>`).join("");
+		}
+		ui.historyLoadMore.hidden = state.historyEvents.length >= Number(summary.total_events || 0);
+	}
+
+	function renderHistoryTimeline(points) {
+		if (!points.length) {
+			ui.historyTimeline.innerHTML = '<p class="feed-empty">No events in this chart window.</p>';
+			return;
+		}
+		const max = Math.max(...points.map((point) => Number(point.count) || 0), 1);
+		ui.historyTimeline.innerHTML = points.slice(-48).map((point) => {
+			const height = Math.max(4, (Number(point.count) / max) * 100);
+			const label = String(point.hour || "").slice(5, 13).replace("T", " ");
+			return `<div class="history-time-column" title="${escapeHtml(label)} · ${Number(point.count)} events"><span style="height:${height}%"></span><small>${escapeHtml(label.slice(-5))}</small></div>`;
+		}).join("");
+	}
+
+	function renderHistorySeverity(entries) {
+		const colors = { critical: "#f1676b", high: "#f6a45b", medium: "#efd06d", low: "#4bc6a6" };
+		const total = entries.reduce((sum, row) => sum + Number(row.count || 0), 0);
+		if (!total) {
+			ui.historySeverityDonut.style.background = "var(--border)";
+			ui.historySeverityLegend.innerHTML = '<p class="feed-empty">No severity data yet.</p>';
+			return;
+		}
+		let position = 0;
+		const stops = entries.map((row) => {
+			const start = position;
+			position += (Number(row.count) / total) * 100;
+			return `${colors[row.label] || "#8496ae"} ${start}% ${position}%`;
+		});
+		ui.historySeverityDonut.style.background = `conic-gradient(${stops.join(",")})`;
+		ui.historySeverityDonut.innerHTML = `<span>${total}<small>events</small></span>`;
+		ui.historySeverityLegend.innerHTML = entries.map((row) => `<div><i style="background:${colors[row.label] || "#8496ae"}"></i><span>${escapeHtml(titleCase(row.label))}</span><strong>${Number(row.count)}</strong></div>`).join("");
 	}
 
 	function scheduleReconnect() {
@@ -273,6 +527,10 @@
 		state.globalRiskScore = Number(payload.global_risk_score || 0);
 		state.globalThreatLevel = (payload.global_threat_level || "low").toLowerCase();
 		state.activeEventCount = Number(payload.active_event_count || 0);
+		if (payload.auto_mitigation) {
+			state.autoMitigation = payload.auto_mitigation;
+			ui.autoMitigateToggle.checked = Boolean(payload.auto_mitigation.enabled);
+		}
 		state.lastUpdatedAt = newestTimestampFromEvents(state.events) || state.lastUpdatedAt || new Date().toISOString();
 		if (!state.selectedEventId || !state.events.some((eventItem) => eventItem.id === state.selectedEventId)) {
 			const nextSelection = choosePriorityEvent(state.events);
@@ -330,8 +588,11 @@
 		renderIncident();
 		renderContainment();
 		renderHealth();
+		renderSimulatorControls();
+		renderAutoMitigation();
 		renderOperatorQueue(options.highlightEventId || null);
 		renderAnalytics();
+		renderAiBrief();
 		renderMeta();
 	}
 
@@ -343,6 +604,7 @@
 	function renderAlertBanner() {
 		const currentThreat = getSelectedEvent() || choosePriorityEvent(state.events);
 		const simStatus = getAttackSimStatus();
+		const unresolvedCount = state.events.filter((eventItem) => String(eventItem.status || "").toLowerCase() !== "mitigated").length;
 
 		if (state.mitigationPending) {
 			ui.alertBanner.hidden = false;
@@ -352,11 +614,11 @@
 			return;
 		}
 
-		if (simStatus === "mitigated") {
+		if (unresolvedCount === 0 && (simStatus === "mitigated" || state.mitigationResult?.success)) {
 			ui.alertBanner.hidden = false;
 			ui.alertBannerKicker.textContent = "Escalation";
-			ui.alertBannerTitle.textContent = "Threat contained";
-			ui.alertBannerCopy.textContent = "Attack simulator stopped. Threat posture will continue to ease as recent attack activity ages out of the posture window.";
+			ui.alertBannerTitle.textContent = "All current attacks mitigated";
+			ui.alertBannerCopy.textContent = state.mitigationResult?.message || "Buffered alerts from both sources are marked mitigated. Check source health for simulator status.";
 			return;
 		}
 
@@ -427,6 +689,8 @@
 		const fragment = document.createDocumentFragment();
 		visibleEvents.forEach((eventItem) => {
 			const level = normalizeRiskLevel(eventItem.risk_level);
+			const isMitigated = String(eventItem.status || "").toLowerCase() === "mitigated";
+			const mitigationPending = state.mitigationPending || state.eventMitigationsPending.has(eventItem.id);
 			const article = document.createElement("article");
 			article.className = `feed-item ${level === "high" || level === "critical" ? "elevated" : ""} ${level === "critical" ? "critical" : ""}`.trim();
 			article.tabIndex = 0;
@@ -459,14 +723,20 @@
 				<div class="feed-score-block">
 					<div class="feed-score-label">Risk</div>
 					<div class="feed-score">${escapeHtml(String(eventItem.risk_score))}</div>
+					<button class="event-mitigate-button ${isMitigated ? "resolved" : ""}" type="button" data-mitigate-event="${escapeHtml(eventItem.id)}" title="Mark this alert mitigated. This does not stop or change its source system." ${isMitigated || mitigationPending ? "disabled" : ""}>${isMitigated ? "Mitigated" : mitigationPending ? "Updating…" : "Mitigate"}</button>
 				</div>
 			`;
+			article.querySelector("[data-mitigate-event]").addEventListener("click", (clickEvent) => {
+				clickEvent.stopPropagation();
+				handleEventMitigation(eventItem.id);
+			});
 
 			article.addEventListener("click", () => {
 				state.selectedEventId = eventItem.id;
 				renderAll();
 			});
 			article.addEventListener("keydown", (keyboardEvent) => {
+				if (keyboardEvent.target.closest("button")) return;
 				if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
 					keyboardEvent.preventDefault();
 					state.selectedEventId = eventItem.id;
@@ -525,35 +795,43 @@
 	function renderContainment() {
 		const simStatus = getAttackSimStatus();
 		const hasAttackSimTelemetry = state.events.some((eventItem) => eventItem.source_system === "attack_sim");
-		const canMitigate = simStatus === "online" || simStatus === "waiting" || (simStatus === "unknown" && hasAttackSimTelemetry);
+		const unresolvedEventCount = state.events.filter((eventItem) => String(eventItem.status || "").toLowerCase() !== "mitigated").length;
+		const canMitigate = unresolvedEventCount > 0 || simStatus === "online" || simStatus === "waiting" || (simStatus === "unknown" && hasAttackSimTelemetry);
 
 		if (state.mitigationPending) {
 			ui.mitigateButton.disabled = true;
-			ui.mitigateButton.textContent = "Mitigation in progress";
-			ui.mitigateButton.className = "containment-button";
+			ui.mitigateButton.textContent = "Mitigating all…";
+			ui.mitigateButton.className = "containment-button danger";
 			ui.containmentStatus.hidden = false;
-			ui.containmentTitle.textContent = "Mitigation in progress";
-			ui.containmentMessage.textContent = "The analytics bridge is stopping the live simulator process.";
+			ui.containmentTitle.textContent = "Mitigating all alerts";
+			ui.containmentMessage.textContent = "The bridge is stopping the simulator and updating unresolved alerts from both sources.";
 			return;
 		}
 
-		if (simStatus === "mitigated") {
+		if (unresolvedEventCount === 0 && (simStatus === "mitigated" || state.mitigationResult?.success)) {
 			ui.mitigateButton.disabled = true;
-			ui.mitigateButton.textContent = "Threat Contained";
+			ui.mitigateButton.textContent = "All Attacks Mitigated";
 			ui.mitigateButton.className = "containment-button success";
 			ui.containmentStatus.hidden = false;
-			ui.containmentTitle.textContent = "Threat contained";
-			ui.containmentMessage.textContent = "Attack simulator stopped. No new attack activity detected.";
+			ui.containmentTitle.textContent = "All current alerts mitigated";
+			ui.containmentMessage.textContent = state.mitigationResult?.message || "All buffered alert records are marked mitigated. Check source health for simulator status.";
 			ui.containmentStatus.classList.remove("pulse");
 			void ui.containmentStatus.offsetWidth;
 			ui.containmentStatus.classList.add("pulse");
 			return;
 		}
 
-		ui.mitigateButton.disabled = !canMitigate;
-		ui.mitigateButton.textContent = "Mitigate Attack";
-		ui.mitigateButton.className = `containment-button ${state.mitigationResult && !state.mitigationResult.success ? "error" : ""}`.trim();
-		ui.containmentStatus.hidden = true;
+		ui.mitigateButton.disabled = !canMitigate || state.eventMitigationsPending.size > 0;
+		ui.mitigateButton.textContent = "Mitigate All";
+		ui.mitigateButton.className = `containment-button danger ${state.mitigationResult && !state.mitigationResult.success ? "error" : ""}`.trim();
+		ui.containmentStatus.hidden = !state.eventMitigationError && (!state.mitigationResult || state.mitigationResult.success);
+		if (state.eventMitigationError) {
+			ui.containmentTitle.textContent = "Alert mitigation failed";
+			ui.containmentMessage.textContent = state.eventMitigationError;
+		} else if (state.mitigationResult && !state.mitigationResult.success) {
+			ui.containmentTitle.textContent = "Mitigation failed";
+			ui.containmentMessage.textContent = state.mitigationResult.message || "The all-alert mitigation action failed.";
+		}
 	}
 
 	function renderHealth() {
@@ -655,7 +933,7 @@
 		if (state.mitigationPending) {
 			return { label: "Mitigating", className: "mini-status health-waiting" };
 		}
-		if (getAttackSimStatus() === "mitigated") {
+		if (selected && String(selected.status || "").toLowerCase() === "mitigated") {
 			return { label: "Mitigated", className: "mini-status health-mitigated" };
 		}
 		if (!selected) {
@@ -679,10 +957,11 @@
 	}
 
 	function choosePriorityEvent(events) {
-		if (!events.length) {
+		const unresolvedEvents = events.filter((eventItem) => String(eventItem.status || "").toLowerCase() !== "mitigated");
+		if (!unresolvedEvents.length) {
 			return null;
 		}
-		return events.slice().sort((left, right) => priorityWeight(right) - priorityWeight(left))[0];
+		return unresolvedEvents.slice().sort((left, right) => priorityWeight(right) - priorityWeight(left))[0];
 	}
 
 	function autoSelectCurrentThreat(newEventId) {
@@ -691,7 +970,7 @@
 		if (!candidate) {
 			return;
 		}
-		if (!currentSelection || priorityWeight(candidate) >= priorityWeight(currentSelection)) {
+		if (!currentSelection || String(currentSelection.status || "").toLowerCase() === "mitigated" || priorityWeight(candidate) >= priorityWeight(currentSelection)) {
 			state.selectedEventId = candidate.id;
 		}
 	}
@@ -835,8 +1114,12 @@
 
 	function postureCopy(level, score) {
 		const selected = getSelectedEvent();
-		if (getAttackSimStatus() === "mitigated") {
-			return "Containment is active. The simulator has been stopped and posture is easing as recent attack activity ages out.";
+		const unresolvedCount = state.events.filter((eventItem) => String(eventItem.status || "").toLowerCase() !== "mitigated").length;
+		if (unresolvedCount === 0 && (getAttackSimStatus() === "mitigated" || state.mitigationResult?.success)) {
+			return "All buffered alerts are mitigated, and posture is easing as recent activity ages out.";
+		}
+		if (getAttackSimStatus() === "mitigated" && unresolvedCount > 0) {
+			return `The simulator is stopped; ${unresolvedCount} buffered alert(s) still need individual review or mitigation.`;
 		}
 		if (!selected) {
 			return "Waiting for normalized telemetry from the analytics bridge.";
@@ -857,7 +1140,7 @@
 		if (state.mitigationPending) {
 			return "Mitigating";
 		}
-		if (getAttackSimStatus() === "mitigated") {
+		if (state.events.every((eventItem) => String(eventItem.status || "").toLowerCase() === "mitigated") && (getAttackSimStatus() === "mitigated" || state.mitigationResult?.success)) {
 			return "Contained";
 		}
 		return { low: "Stable", medium: "Elevated", high: "Escalated", critical: "Critical" }[level] || "Stable";
@@ -991,8 +1274,173 @@
 			.replaceAll("'", "&#39;");
 	}
 
+	async function handleEventMitigation(eventId) {
+		if (state.mitigationPending || state.eventMitigationsPending.has(eventId)) return;
+		state.eventMitigationError = null;
+		state.eventMitigationsPending.add(eventId);
+		renderAll();
+		try {
+			const response = await fetch(`/api/events/${encodeURIComponent(eventId)}/mitigate`, {
+				method: "POST",
+				headers: { Accept: "application/json" }
+			});
+			const payload = await response.json();
+			if (!response.ok || !payload.success) {
+				throw new Error(payload.detail || payload.message || "Could not mitigate this alert.");
+			}
+			if (state.selectedEventId === eventId) state.selectedEventId = null;
+			ingestState(await fetchJson("/api/state"));
+		} catch (error) {
+			state.eventMitigationError = error instanceof Error ? error.message : "Could not mitigate this alert.";
+		} finally {
+			state.eventMitigationsPending.delete(eventId);
+			renderAll();
+		}
+	}
+
+	async function refreshAiStatus() {
+		ui.aiRefreshButton.disabled = true;
+		ui.aiRefreshButton.textContent = "Checking…";
+		try {
+			state.aiStatus = await fetchJson("/api/ai/status");
+		} catch (error) {
+			state.aiStatus = { available: false, model_ready: false, model: "Gemini", message: "Could not reach the AI status endpoint." };
+		}
+		ui.aiRefreshButton.disabled = false;
+		ui.aiRefreshButton.textContent = "Check setup";
+		renderAiBrief();
+	}
+
+	async function handleAiBriefRequest() {
+		if (state.aiPending) return;
+		state.aiPending = true;
+		state.aiError = null;
+		renderAiBrief();
+		try {
+			const response = await fetch("/api/ai/brief", { method: "POST", headers: { Accept: "application/json" } });
+			const payload = await response.json();
+			if (!response.ok) {
+				throw new Error(payload.detail || "The online analyst could not generate a brief.");
+			}
+			state.aiBriefResult = payload;
+		} catch (error) {
+			state.aiError = error instanceof Error ? error.message : "The online analyst could not generate a brief.";
+		} finally {
+			state.aiPending = false;
+			renderAiBrief();
+		}
+	}
+
+	function renderAiBrief() {
+		const status = state.aiStatus;
+		const ready = Boolean(status && status.available && status.model_ready);
+		ui.aiModelStatus.textContent = !status
+			? "Checking API key"
+			: ready
+				? `${status.provider || "Gemini"} · Key configured`
+				: "API key needed";
+		ui.aiModelStatus.className = `ai-model-status ${ready ? "ready" : "offline"}`;
+		ui.aiGenerateButton.disabled = !ready || state.aiPending;
+		ui.aiGenerateButton.textContent = state.aiPending ? "Analyzing telemetry…" : state.aiBriefResult ? "Regenerate brief" : "Generate brief";
+
+		if (state.aiPending) {
+			ui.aiAnalystMessage.textContent = "Sending up to 30 normalized recent events to Gemini for an advisory analysis…";
+		} else if (state.aiError) {
+			ui.aiAnalystMessage.textContent = state.aiError;
+		} else if (state.aiBriefResult && isAiBriefStale(state.aiBriefResult)) {
+			ui.aiAnalystMessage.textContent = "Telemetry changed since this snapshot. Regenerate the brief for the latest incident picture.";
+		} else if (state.aiBriefResult) {
+			ui.aiAnalystMessage.textContent = "Brief generated from the current telemetry snapshot. No response action was executed.";
+		} else if (status) {
+			ui.aiAnalystMessage.textContent = status.message;
+		} else {
+			ui.aiAnalystMessage.textContent = "Checking Gemini API configuration.";
+		}
+
+		ui.aiBrief.hidden = !state.aiBriefResult;
+		if (!state.aiBriefResult) return;
+		const brief = state.aiBriefResult;
+		ui.aiOverallAssessment.textContent = brief.overall_assessment || "No assessment returned.";
+		populateTextList(ui.aiKeyFindings, brief.key_findings || [], "No notable findings were returned.");
+		populateTextList(ui.aiRecommendedActions, brief.recommended_actions || [], "Continue monitoring and validate findings against source systems.");
+		ui.aiCampaignHypotheses.replaceChildren();
+		if (!brief.campaign_hypotheses?.length) {
+			const empty = document.createElement("p");
+			empty.className = "ai-empty-note";
+			empty.textContent = "No reliable correlation identified from this event sample.";
+			ui.aiCampaignHypotheses.appendChild(empty);
+		} else {
+			brief.campaign_hypotheses.forEach((hypothesis) => {
+				const card = document.createElement("article");
+				card.className = "ai-hypothesis";
+				const heading = document.createElement("div");
+				heading.className = "ai-hypothesis-heading";
+				const name = document.createElement("strong");
+				name.textContent = hypothesis.name || "Possible pattern";
+				const confidence = document.createElement("span");
+				confidence.textContent = `${clampNumber(hypothesis.confidence, 0, 100)}% confidence`;
+				heading.append(name, confidence);
+				const evidence = document.createElement("p");
+				evidence.textContent = hypothesis.evidence || "No supporting evidence was returned.";
+				const ids = document.createElement("div");
+				ids.className = "ai-evidence-ids";
+				if (Array.isArray(hypothesis.event_ids) && hypothesis.event_ids.length) {
+					const evidenceLabel = document.createElement("span");
+					evidenceLabel.textContent = "Evidence";
+					ids.appendChild(evidenceLabel);
+					hypothesis.event_ids.forEach((eventId) => {
+						const evidenceButton = document.createElement("button");
+						evidenceButton.type = "button";
+						evidenceButton.className = "ai-evidence-link";
+						evidenceButton.textContent = eventId;
+						evidenceButton.addEventListener("click", () => {
+							const eventItem = state.events.find((candidate) => candidate.id === eventId);
+							if (!eventItem) return;
+							state.selectedEventId = eventId;
+							renderAll();
+							const feedRow = Array.from(ui.feedList.querySelectorAll("[role='listitem']")).find((row) => row.querySelector("[data-mitigate-event]")?.dataset.mitigateEvent === eventId);
+							feedRow?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+						});
+						ids.appendChild(evidenceButton);
+					});
+				} else {
+					ids.textContent = "No evidence event IDs provided.";
+				}
+				card.append(heading, evidence, ids);
+				ui.aiCampaignHypotheses.appendChild(card);
+			});
+		}
+		ui.aiLimitations.textContent = `Limitations: ${brief.limitations || "Model-generated analysis can be wrong; verify against original telemetry."}`;
+		ui.aiBriefMeta.textContent = `${brief.provider || "Gemini"} · ${brief.model || "unknown"} · ${brief.events_analyzed || 0} events · ${formatDateTime(brief.generated_at)}`;
+	}
+
+	function populateTextList(element, values, emptyMessage) {
+		element.replaceChildren();
+		if (!values.length) {
+			const item = document.createElement("li");
+			item.textContent = emptyMessage;
+			element.appendChild(item);
+			return;
+		}
+		values.forEach((value) => {
+			const item = document.createElement("li");
+			item.textContent = value;
+			element.appendChild(item);
+		});
+	}
+
+	function isAiBriefStale(brief) {
+		if (!Array.isArray(brief.snapshot_events)) return false;
+		const currentSnapshot = state.events.slice(0, brief.snapshot_events.length).map((eventItem) => ({
+			id: eventItem.id,
+			status: eventItem.status,
+			risk_score: eventItem.risk_score
+		}));
+		return JSON.stringify(currentSnapshot) !== JSON.stringify(brief.snapshot_events);
+	}
+
 	async function handleMitigationRequest() {
-		if (state.mitigationPending) {
+		if (state.mitigationPending || state.eventMitigationsPending.size > 0) {
 			return;
 		}
 		state.mitigationPending = true;
@@ -1005,6 +1453,7 @@
 			if (!response.ok || !payload.success) {
 				throw new Error(payload.message || "Mitigation request failed.");
 			}
+			state.selectedEventId = null;
 			ingestState(await fetchJson("/api/state"));
 			applyHealthResponse(await fetchJson("/api/health"));
 			renderAll();

@@ -5,7 +5,8 @@
 - Windows + PowerShell
 - .NET SDK
 - Python 3.10+
-- Chrome/Edge
+- Chrome or Edge
+- A Gemini API key from Google AI Studio (only needed for the AI brief)
 - Repository root: `C:\PANW-L2\tc-Frankenstein`
 
 ## Setup
@@ -17,89 +18,45 @@ python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 ```
 
-If VS Code shows `(.venv)` in the terminal, the virtual environment is already active.
-
-## Run the Demo
-
-Use 3 terminals.
-
-### Terminal 1 — Legacy API
+For Gemini, create an API key at [Google AI Studio](https://aistudio.google.com/apikey), then copy and edit the ignored local configuration file:
 
 ```powershell
-dotnet run --project .\legacy\LegacyLogger
+Copy-Item .env.example .env
+notepad .env
 ```
 
-Runs on:
+Replace the key placeholder, save, and restart the bridge. Keep `.env` private; it is excluded from Git.
 
-`http://127.0.0.1:5042`
-
-### Terminal 2 — Attack Simulator
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\simulator\AttackSim.ps1
-```
-
-Generates live:
-
-- Brute Force
-- SQL Injection
-- Port Scan
-- Credential Stuffing
-
-Events are written to `live_stream.log`.
-
-### Terminal 3 — Analytics Bridge
+## Start the Bridge
 
 ```powershell
 .\.venv\Scripts\python -m bridge.main
 ```
 
-Runs on:
+Open `http://127.0.0.1:8000/`. The bridge and dashboard run on loopback.
 
-`http://127.0.0.1:8000`
+## Start Data Sources from the Dashboard
 
-### Open the Command Center
+1. Expand **Simulator launchers** in the top panel.
+2. Use **Start legacy source** to start the local ASP.NET API.
+3. Select one or more attack types under **Attack simulation**, then choose **Start selected attacks**.
+4. A running attack type is checked and locked until you stop the simulation. The selected set runs in one PowerShell process and writes to `live_stream.log`.
 
-Open:
-
-`http://127.0.0.1:8000/`
-
-## What the Demo Does
-
-The flow is:
-
-```text
-Legacy ASP.NET API ─────┐
-                       ├──> Python Analytics Bridge ──> Threat Command Center
-PowerShell Simulator ──┘
-             live_stream.log
-```
-
-The bridge:
-
-- ingests both sources
-- normalizes events into one contract
-- applies deterministic risk scoring
-- maintains threat posture
-- streams updates to the UI using SSE
-- owns the mitigation control
+The source launchers manage only local demo processes. The legacy source can still be started from a terminal. A service already launched externally is shown as online but cannot be stopped by the dashboard.
 
 ## Demo Walkthrough
 
-1. Start all 3 components.
-2. Open the dashboard and let threats arrive.
-3. Wait for a High/Critical event.
-4. Select the incident and review the risk, origin, explanation, and recommended action.
-5. Click **Mitigate Attack**.
-6. The bridge terminates the real PowerShell simulator process.
-7. The dashboard changes to **Threat Contained** and threat posture decreases as recent activity ages out.
-8. Restart the simulator to demonstrate recovery and live events returning.
+1. Start one or both sources from the dashboard and wait for events.
+2. Select an incident and review its risk, origin, explanation, and recommended action.
+3. Optionally choose **Generate brief** for a Gemini-generated advisory correlation summary linked to event IDs.
+4. Use a row-level **Mitigate** to resolve one event while its source keeps running.
+5. Leave **Auto-mitigate** on to resolve up to five oldest unresolved critical events when the 200-event buffer reaches capacity, then after each five additional events while full. The slider beside **Mitigate All** turns this behavior off or on and displays its latest action.
+6. Use **Mitigate All** to stop the PowerShell attack simulator and mark all events in the live buffer mitigated.
+7. Expand **Investigation history** below the live queue for archived timelines, severity and source distributions, the event log, and a downloadable CSV report.
 
-### Key Story
+The live queue remains a 200-event in-memory buffer. Every normalized event and status change is also written to `runtime/investigation-history.sqlite3`, so the investigation history remains after events roll out of the queue and after the bridge restarts.
 
-```text
-Detect → Analyze → Escalate → Mitigate → Contain → Recover
-```
+The Gemini analyst receives only bounded normalized event fields, not raw payloads. It cannot call tools or mitigate events. The API key stays server-side. The Gemini free tier has quotas and different data-use terms from paid services; this demo uses synthetic training events only.
 
 ## Useful Checks
 
@@ -107,6 +64,7 @@ Detect → Analyze → Escalate → Mitigate → Contain → Recover
 curl.exe http://127.0.0.1:5042/api/raw-logs
 curl.exe http://127.0.0.1:8000/api/health
 curl.exe http://127.0.0.1:8000/api/state
+curl.exe http://127.0.0.1:8000/api/history/summary
 ```
 
 ## Troubleshooting
@@ -118,13 +76,4 @@ netstat -ano | findstr ":5042"
 netstat -ano | findstr ":8000"
 ```
 
-Identify the owning PID before stopping it.
-
-If the simulator exits unexpectedly, check for an older `AttackSim.ps1` process:
-
-```powershell
-Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -match "AttackSim.ps1" } |
-  Select-Object ProcessId, CommandLine
-```
-
+If a dashboard-started source fails to launch, inspect `runtime/legacy-api.log` or `runtime/attack-sim.log`. If a simulator process exits unexpectedly, check for an older `AttackSim.ps1` process before deleting its stale `runtime/attack-sim.pid` file.

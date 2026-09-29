@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,9 @@ def stop_attack_simulator(settings: Settings, current_status: str | None = None)
             pid=pid_value,
         )
 
-    if not _is_attack_simulator_process(metadata):
+    if not _is_attack_simulator_process(metadata) and not _matches_pid_marker_process(
+        pid_path, pid_value, {"powershell", "pwsh"}
+    ):
         return MitigationResult(
             success=False,
             action="mitigate",
@@ -143,6 +146,43 @@ def _is_attack_simulator_process(metadata: dict[str, Any]) -> bool:
     return "attacksim.ps1" in command_line and "simulator" in command_line
 
 
+def _matches_pid_marker_process(pid_path: Path, pid: int, process_names: set[str]) -> bool:
+    """Verify a PID marker against process name and its recorded start time.
+
+    Some managed Windows environments deny Win32_Process command-line queries.
+    The simulator writes its own PID marker immediately after process start, so
+    matching that marker's timestamp against Get-Process provides a safe fallback
+    without treating an unrelated process that later reused the PID as managed.
+    """
+    try:
+        if int(pid_path.read_text(encoding="utf-8").strip()) != pid:
+            return False
+        marker_time = pid_path.stat().st_mtime
+    except (OSError, ValueError):
+        return False
+
+    powershell_script = (
+        f"$process = Get-Process -Id {pid} -ErrorAction SilentlyContinue; "
+        "if ($null -eq $process) { exit 0 }; "
+        "$process | Select-Object Id, ProcessName, @{Name='StartedUtc';Expression={$_.StartTime.ToUniversalTime().ToString('o')}} | ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", powershell_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        metadata = json.loads(result.stdout.strip())
+        process_name = str(metadata.get("ProcessName", "")).lower()
+        process_id = int(metadata.get("Id", -1))
+        started = datetime.fromisoformat(str(metadata.get("StartedUtc", "")).replace("Z", "+00:00")).timestamp()
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        return False
+
+    return process_id == pid and process_name in process_names and abs(started - marker_time) <= 15
+
+
 def _terminate_process(pid: int) -> bool:
     result = subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -150,11 +190,27 @@ def _terminate_process(pid: int) -> bool:
         text=True,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True
+
+    powershell_script = (
+        f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue; "
+        "Start-Sleep -Milliseconds 150; "
+        f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 1 }}"
+    )
+    fallback = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", powershell_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return fallback.returncode == 0
 
 
 def _cleanup_pid_file(pid_path: Path) -> None:
     try:
         pid_path.unlink(missing_ok=True)
+        if pid_path.name == "attack-sim.pid":
+            pid_path.with_name("attack-sim-types.json").unlink(missing_ok=True)
     except OSError:
         return

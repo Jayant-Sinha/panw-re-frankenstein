@@ -30,7 +30,7 @@
       <div class="topbar-meta">
         <div class="meta-chip">
           <span class="meta-label">Environment</span>
-          <span class="meta-value">Local demo</span>
+          <span class="meta-value">Local simulation range</span>
         </div>
         <div class="meta-chip">
           <span class="meta-label">Bridge</span>
@@ -42,6 +42,46 @@
         </div>
       </div>
     </header>
+
+    <details class="simulator-launcher panel">
+      <summary>
+        <span><span class="eyebrow">Local source controls</span><strong>Simulator launchers</strong></span>
+        <span class="simulator-summary-status" id="simulator-summary-status">Checking sources…</span>
+      </summary>
+      <div class="simulator-launch-grid">
+        <section class="simulator-launch-card" aria-labelledby="legacy-launch-heading">
+          <div class="simulator-launch-heading">
+            <div><span class="eyebrow">Legacy source</span><h3 id="legacy-launch-heading">Legacy API simulator</h3></div>
+            <span class="health-badge health-unknown" id="legacy-launch-status">Unknown</span>
+          </div>
+          <p>Start or stop the local ASP.NET service that supplies legacy attack records.</p>
+          <div class="simulator-launch-actions">
+            <button class="secondary-button" id="legacy-start-button" type="button">Start legacy source</button>
+            <button class="secondary-button" id="legacy-stop-button" type="button" disabled>Stop</button>
+          </div>
+          <p class="simulator-launch-message" id="legacy-launch-message" aria-live="polite">The source can also be started from its terminal.</p>
+        </section>
+        <section class="simulator-launch-card" aria-labelledby="attack-launch-heading">
+          <div class="simulator-launch-heading">
+            <div><span class="eyebrow">PowerShell source</span><h3 id="attack-launch-heading">Attack simulation</h3></div>
+            <span class="health-badge health-unknown" id="attack-launch-status">Unknown</span>
+          </div>
+          <p>Choose one or more attack types. Running types are checked and locked until the simulator stops.</p>
+          <fieldset class="attack-type-options" id="attack-type-options">
+            <legend>Attack types</legend>
+            <label><input type="checkbox" name="attack-type" value="Brute Force"><span>Brute Force</span></label>
+            <label><input type="checkbox" name="attack-type" value="SQL Injection"><span>SQL Injection</span></label>
+            <label><input type="checkbox" name="attack-type" value="Port Scan"><span>Port Scan</span></label>
+            <label><input type="checkbox" name="attack-type" value="Credential Stuffing"><span>Credential Stuffing</span></label>
+          </fieldset>
+          <div class="simulator-launch-actions">
+            <button class="secondary-button" id="attack-start-button" type="button">Start selected attacks</button>
+            <button class="secondary-button" id="attack-stop-button" type="button" disabled>Stop simulation</button>
+          </div>
+          <p class="simulator-launch-message" id="attack-launch-message" aria-live="polite">Select attack types, then start the simulation.</p>
+        </section>
+      </div>
+    </details>
 
     <div class="alert-banner" id="alert-banner" hidden>
       <div class="alert-banner-stack">
@@ -142,7 +182,11 @@
           </div>
           <p class="priority-action-response" id="priority-action-response">Recommended response will appear when an incident is available.</p>
           <div class="priority-action-controls">
-            <button class="containment-button" id="mitigate-button" type="button">Mitigate Attack</button>
+            <button class="containment-button danger" id="mitigate-button" type="button">Mitigate All</button>
+            <label class="auto-mitigate-switch" for="auto-mitigate-toggle">
+              <span class="switch-control"><input id="auto-mitigate-toggle" type="checkbox" role="switch" checked><span class="switch-slider"></span></span>
+              <span><strong>Auto-mitigate</strong><small id="auto-mitigate-message" aria-live="polite">On · at 200 buffered events, resolve up to five oldest critical alerts</small></span>
+            </label>
             <div class="containment-status" id="containment-status" hidden>
               <strong id="containment-title">Threat contained</strong>
               <p id="containment-message">Attack simulator stopped. No new attack activity detected.</p>
@@ -294,6 +338,45 @@
         </div>
       </section>
 
+      <section class="ai-analyst panel" aria-labelledby="ai-analyst-heading">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Gemini AI · Advisory only</span>
+            <h2 id="ai-analyst-heading">Incident intelligence brief</h2>
+            <p class="ai-analyst-intro">Correlate recent events, surface evidence-backed patterns, and get defensive next steps with the free Gemini API.</p>
+          </div>
+          <div class="ai-analyst-controls">
+            <span class="ai-model-status" id="ai-model-status">Checking API key</span>
+            <button class="ai-refresh-button" id="ai-refresh-button" type="button">Check setup</button>
+            <button class="ai-generate-button" id="ai-generate-button" type="button" disabled>Generate brief</button>
+          </div>
+        </div>
+
+        <p class="ai-analyst-message" id="ai-analyst-message" aria-live="polite">Checking Gemini API configuration.</p>
+        <div class="ai-brief" id="ai-brief" hidden>
+          <div class="ai-brief-headline">
+            <span class="eyebrow">Analyst assessment</span>
+            <p id="ai-overall-assessment"></p>
+          </div>
+          <div class="ai-brief-grid">
+            <article class="ai-brief-section">
+              <h3>Key findings</h3>
+              <ul id="ai-key-findings"></ul>
+            </article>
+            <article class="ai-brief-section">
+              <h3>Possible correlations</h3>
+              <div id="ai-campaign-hypotheses"></div>
+            </article>
+            <article class="ai-brief-section">
+              <h3>Defensive next steps</h3>
+              <ul id="ai-recommended-actions"></ul>
+            </article>
+          </div>
+          <div class="ai-brief-footnote" id="ai-limitations"></div>
+          <div class="ai-brief-meta" id="ai-brief-meta"></div>
+        </div>
+      </section>
+
       <section class="feed panel">
         <div class="section-heading">
           <div>
@@ -332,6 +415,30 @@
 
         <div class="feed-list" id="feed-list" role="list" aria-label="Live threat feed"></div>
       </section>
+
+      <details class="investigation-history panel" id="investigation-history">
+        <summary>
+          <span><span class="eyebrow">Persistent archive</span><strong>Investigation history</strong></span>
+          <span class="history-summary-meta" id="history-summary-meta">Open to explore archived events</span>
+        </summary>
+        <div class="history-content">
+          <div class="history-toolbar">
+            <p>Events are archived in SQLite and remain available when they roll out of the 200-event live buffer.</p>
+            <div class="history-toolbar-actions">
+              <label for="history-days">Window</label>
+              <select id="history-days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select>
+              <a class="secondary-button history-download" href="/api/history/export.csv">Download CSV report</a>
+            </div>
+          </div>
+          <div class="history-analytics-grid">
+            <details class="history-chart-card" open><summary>Attack volume over time</summary><div class="history-timeline" id="history-timeline"></div></details>
+            <details class="history-chart-card"><summary>Severity distribution</summary><div class="history-donut-wrap"><div class="history-donut" id="history-severity-donut"></div><div class="history-legend" id="history-severity-legend"></div></div></details>
+            <details class="history-chart-card"><summary>Attack types and sources</summary><div class="history-two-charts"><div><h4>By category</h4><div id="history-category-chart"></div></div><div><h4>By source</h4><div id="history-source-chart"></div></div></div></details>
+            <details class="history-chart-card history-chart-wide"><summary>Archived event log</summary><div class="history-event-list" id="history-event-list"></div><button class="secondary-button" id="history-load-more" type="button">Load more</button></details>
+          </div>
+          <p class="history-error" id="history-error" aria-live="polite"></p>
+        </div>
+      </details>
 
       <section class="activity panel">
         <div class="section-heading">

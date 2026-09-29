@@ -10,4 +10,11 @@ __pycache__/
 live_stream.log
 simulator/live_stream.log
 runtime/*.pid
+runtime/*.sqlite3
+runtime/*.log
+runtime/*.json
+runtime/attack-sim-types.json
+.env
+.env.*
+!.env.example
 

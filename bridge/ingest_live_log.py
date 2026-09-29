@@ -19,8 +19,7 @@ logger = logging.getLogger(__name__)
 
 async def watch_live_log(settings: Settings, state: BridgeState, stop_event: asyncio.Event) -> None:
     path = settings.live_stream_path
-    offset = 0
-    pending_fragment = ""
+    offset, pending_fragment = _load_cursor(settings.live_log_offset_path)
     last_event_at: datetime | None = None
     pid_path = settings.attack_sim_pid_path
 
@@ -37,6 +36,7 @@ async def watch_live_log(settings: Settings, state: BridgeState, stop_event: asy
             if not path.exists():
                 offset = 0
                 pending_fragment = ""
+                _save_cursor(settings.live_log_offset_path, offset, pending_fragment)
                 await state.record_source_health(
                     "attack_sim",
                     available=False,
@@ -52,6 +52,7 @@ async def watch_live_log(settings: Settings, state: BridgeState, stop_event: asy
                 logger.info("Simulator log was truncated or replaced. Resetting file offset.")
                 offset = 0
                 pending_fragment = ""
+                _save_cursor(settings.live_log_offset_path, offset, pending_fragment)
 
             with path.open("r", encoding="utf-8", newline="") as handle:
                 handle.seek(offset)
@@ -84,6 +85,7 @@ async def watch_live_log(settings: Settings, state: BridgeState, stop_event: asy
 
             previous_last_event_at = last_event_at
             pending_fragment, last_event_at = await _process_chunk(chunk, pending_fragment, state, last_event_at)
+            _save_cursor(settings.live_log_offset_path, offset, pending_fragment)
             if last_event_at is not None and last_event_at != previous_last_event_at and pid_path.exists():
                 await state.record_source_health(
                     "attack_sim",
@@ -209,3 +211,26 @@ async def _wait_for_next_cycle(stop_event: asyncio.Event, seconds: float) -> Non
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
     except asyncio.TimeoutError:
         return
+
+
+def _load_cursor(cursor_path) -> tuple[int, str]:
+    try:
+        payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+        offset = max(0, int(payload.get("offset", 0)))
+        pending = str(payload.get("pending_fragment", ""))
+        return offset, pending
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 0, ""
+
+
+def _save_cursor(cursor_path, offset: int, pending_fragment: str) -> None:
+    try:
+        cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = cursor_path.with_suffix(cursor_path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps({"offset": offset, "pending_fragment": pending_fragment}),
+            encoding="utf-8",
+        )
+        temporary_path.replace(cursor_path)
+    except OSError as exc:
+        logger.warning("Could not persist simulator log cursor: %s", exc)

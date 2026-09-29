@@ -35,6 +35,12 @@ def _build_event_id(source_system: str, raw_payload: dict[str, Any], ingested_at
     return f"evt_{digest}"
 
 
+def _build_stable_event_id(source_system: str, raw_payload: dict[str, Any]) -> str:
+    canonical = json.dumps(raw_payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(f"{source_system}|{canonical}".encode("utf-8")).hexdigest()[:16]
+    return f"evt_{digest}"
+
+
 def _category_for_title(title: str) -> ThreatCategory:
     return TITLE_TO_CATEGORY.get(title, "unknown")
 
@@ -115,7 +121,7 @@ def normalize_legacy_event(
     status = _normalize_status(raw_payload.get("Status"), default="active")
 
     return ThreatEvent(
-        id=_build_event_id("legacy_api", raw_payload, ingested_at),
+        id=_build_stable_event_id("legacy_api", raw_payload),
         source_system="legacy_api",
         source_type="legacy",
         observed_at=_parse_legacy_timestamp(raw_payload.get("Timestamp"), ingested_at),
